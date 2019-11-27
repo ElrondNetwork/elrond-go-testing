@@ -1,14 +1,63 @@
 package main
 
 import (
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"math"
+	"math/big"
+	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"syscall"
+	"time"
 
+	"github.com/ElrondNetwork/elrond-go-testing/cmd/node/factory"
+	"github.com/ElrondNetwork/elrond-go-testing/cmd/node/metrics"
+	"github.com/ElrondNetwork/elrond-go-testing/config"
+	"github.com/ElrondNetwork/elrond-go-testing/core"
+	"github.com/ElrondNetwork/elrond-go-testing/core/indexer"
+	"github.com/ElrondNetwork/elrond-go-testing/core/serviceContainer"
+	"github.com/ElrondNetwork/elrond-go-testing/core/statistics"
+	"github.com/ElrondNetwork/elrond-go-testing/crypto"
+	"github.com/ElrondNetwork/elrond-go-testing/crypto/signing/kyber"
+	"github.com/ElrondNetwork/elrond-go-testing/data"
+	"github.com/ElrondNetwork/elrond-go-testing/data/state"
+	"github.com/ElrondNetwork/elrond-go-testing/data/typeConverters"
+	"github.com/ElrondNetwork/elrond-go-testing/dataRetriever"
+	"github.com/ElrondNetwork/elrond-go-testing/display"
+	"github.com/ElrondNetwork/elrond-go-testing/facade"
+	"github.com/ElrondNetwork/elrond-go-testing/hashing"
+	"github.com/ElrondNetwork/elrond-go-testing/logger"
+	"github.com/ElrondNetwork/elrond-go-testing/marshal"
+	"github.com/ElrondNetwork/elrond-go-testing/node"
+	"github.com/ElrondNetwork/elrond-go-testing/node/external"
+	"github.com/ElrondNetwork/elrond-go-testing/ntp"
+	"github.com/ElrondNetwork/elrond-go-testing/process"
+	"github.com/ElrondNetwork/elrond-go-testing/process/economics"
+	"github.com/ElrondNetwork/elrond-go-testing/process/factory/metachain"
+	"github.com/ElrondNetwork/elrond-go-testing/process/factory/shard"
+	"github.com/ElrondNetwork/elrond-go-testing/process/smartContract"
+	"github.com/ElrondNetwork/elrond-go-testing/process/smartContract/hooks"
+	"github.com/ElrondNetwork/elrond-go-testing/sharding"
+	"github.com/ElrondNetwork/elrond-go-testing/statusHandler"
+	factoryViews "github.com/ElrondNetwork/elrond-go-testing/statusHandler/factory"
+	"github.com/google/gops/agent"
 	"github.com/urfave/cli"
+)
+
+const (
+	defaultStatsPath   = "stats"
+	defaultDBPath      = "db"
+	defaultEpochString = "Epoch"
+	defaultShardString = "Shard"
+	metachainShardName = "metachain"
 )
 
 var (
@@ -139,7 +188,7 @@ VERSION:
 		Name: "rest-api-interface",
 		Usage: "The interface address and port to which the REST API will attempt to bind. " +
 			"To bind to all available interfaces, set this flag to :8080",
-		Value: "localhost:8080",
+		Value: facade.DefaultRestInterface,
 	}
 
 	// restApiDebug defines a flag for starting the rest API engine in debug mode
@@ -192,7 +241,7 @@ VERSION:
 	logLevel = cli.StringFlag{
 		Name:  "logLevel",
 		Usage: "This flag specifies the logger level",
-		Value: "*:INFO",
+		Value: "*:" + logger.LogInfo.String(),
 	}
 	// disableAnsiColor defines if the logger subsystem should prevent displaying ANSI colors
 	disableAnsiColor = cli.BoolFlag{
@@ -225,7 +274,17 @@ VERSION:
 		Usage: "The preferred shard as an observer",
 		Value: "",
 	}
+
+	rm *statistics.ResourceMonitor
 )
+
+// dbIndexer will hold the database indexer. Defined globally so it can be initialised only in
+//  certain conditions. If those conditions will not be met, it will stay as nil
+var dbIndexer indexer.Indexer
+
+// coreServiceContainer is defined globally so it can be injected with appropriate
+//  params depending on the type of node we are starting
+var coreServiceContainer serviceContainer.Core
 
 // appVersion should be populated at build time using ldflags
 // Usage examples:
@@ -234,13 +293,17 @@ VERSION:
 // windows:
 //            for /f %i in ('git describe --tags --long --dirty') do set VERS=%i
 //            go build -i -v -ldflags="-X main.appVersion=%VERS%"
-var appVersion = "undefined"
+var appVersion = core.UnVersionedAppString
 
 func main() {
+	_ = display.SetDisplayByteSlice(display.ToHexShort)
+	log := logger.GetOrCreate("main")
+
 	app := cli.NewApp()
 	cli.AppHelpTemplate = nodeHelpTemplate
 	app.Name = "Elrond Node CLI App"
 	app.Version = fmt.Sprintf("%s/%s/%s-%s", appVersion, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	app.Usage = "This is the entry point for starting a new Elrond node - the app will start after the genesis timestamp"
 	app.Flags = []cli.Flag{
 		genesisFile,
 		nodesFile,
@@ -281,22 +344,965 @@ func main() {
 	}
 
 	app.Action = func(c *cli.Context) error {
-		return startNode(c, app.Version)
+		return startNode(c, log, app.Version)
 	}
 
 	err := app.Run(os.Args)
 	if err != nil {
-		fmt.Printf("error: %s\n", err.Error())
+		log.Error(err.Error())
 		os.Exit(1)
 	}
 }
 
-func startNode(_ *cli.Context, version string) error {
-	fmt.Printf("application is now running, version %s\n", version)
+func getSuite(config *config.Config) (crypto.Suite, error) {
+	switch config.Consensus.Type {
+	case factory.BlsConsensusType:
+		return kyber.NewSuitePairingBn256(), nil
+	case factory.BnConsensusType:
+		return kyber.NewBlakeSHA256Ed25519(), nil
+	}
+
+	return nil, errors.New("no consensus provided in config file")
+}
+
+func startNode(ctx *cli.Context, log logger.Logger, version string) error {
+	log.Trace("startNode called")
+	logLevel := ctx.GlobalString(logLevel.Name)
+	err := logger.SetLogLevel(logLevel)
+	if err != nil {
+		return err
+	}
+	noAnsiColor := ctx.GlobalBool(disableAnsiColor.Name)
+	if noAnsiColor {
+		err = logger.RemoveLogObserver(os.Stdout)
+		if err != nil {
+			//we need to print this manually as we do not have console log observer
+			fmt.Println("error removing log observer: " + err.Error())
+			return err
+		}
+
+		err = logger.AddLogObserver(os.Stdout, &logger.PlainFormatter{})
+		if err != nil {
+			//we need to print this manually as we do not have console log observer
+			fmt.Println("error setting log observer: " + err.Error())
+			return err
+		}
+	}
+	log.Trace("logger updated", "level", logLevel, "disable ANSI color", noAnsiColor)
+
+	enableGopsIfNeeded(ctx, log)
+
+	log.Info("starting node", "version", version, "pid", os.Getpid())
+	log.Trace("reading configs")
+
+	configurationFileName := ctx.GlobalString(configurationFile.Name)
+	generalConfig, err := loadMainConfig(configurationFileName)
+	if err != nil {
+		return err
+	}
+	log.Debug("config", "file", configurationFileName)
+
+	configurationEconomicsFileName := ctx.GlobalString(configurationEconomicsFile.Name)
+	economicsConfig, err := loadEconomicsConfig(configurationEconomicsFileName)
+	if err != nil {
+		return err
+	}
+	log.Debug("config", "file", configurationEconomicsFileName)
+
+	configurationPreferencesFileName := ctx.GlobalString(configurationPreferencesFile.Name)
+	preferencesConfig, err := loadPreferencesConfig(configurationPreferencesFileName)
+	if err != nil {
+		return err
+	}
+	log.Debug("config", "file", configurationPreferencesFileName)
+
+	p2pConfigurationFileName := ctx.GlobalString(p2pConfigurationFile.Name)
+	p2pConfig, err := core.LoadP2PConfig(p2pConfigurationFileName)
+	if err != nil {
+		return err
+	}
+
+	log.Debug("config", "file", p2pConfigurationFileName)
+	if ctx.IsSet(port.Name) {
+		p2pConfig.Node.Port = ctx.GlobalInt(port.Name)
+	}
+
+	genesisConfig, err := sharding.NewGenesisConfig(ctx.GlobalString(genesisFile.Name))
+	if err != nil {
+		return err
+	}
+	log.Debug("config", "file", ctx.GlobalString(genesisFile.Name))
+
+	nodesConfig, err := sharding.NewNodesSetup(ctx.GlobalString(nodesFile.Name), ctx.GlobalUint64(numOfNodes.Name))
+	if err != nil {
+		return err
+	}
+	log.Debug("config", "file", ctx.GlobalString(nodesFile.Name))
+
+	syncer := ntp.NewSyncTime(generalConfig.NTPConfig, time.Hour, nil)
+	go syncer.StartSync()
+
+	log.Debug("NTP average clock offset", "value", syncer.ClockOffset())
+
+	//TODO: The next 5 lines should be deleted when we are done testing from a precalculated (not hard coded) timestamp
+	if nodesConfig.StartTime == 0 {
+		time.Sleep(1000 * time.Millisecond)
+		ntpTime := syncer.CurrentTime()
+		nodesConfig.StartTime = (ntpTime.Unix()/60 + 1) * 60
+	}
+
+	startTime := time.Unix(nodesConfig.StartTime, 0)
+
+	log.Info("start time",
+		"formatted", startTime.Format("Mon Jan 2 15:04:05 MST 2006"),
+		"seconds", startTime.Unix())
+
+	log.Trace("getting suite")
+	suite, err := getSuite(generalConfig)
+	if err != nil {
+		return err
+	}
+
+	initialNodesSkPemFileName := ctx.GlobalString(initialNodesSkPemFile.Name)
+	keyGen, privKey, pubKey, err := factory.GetSigningParams(
+		ctx,
+		sk.Name,
+		skIndex.Name,
+		initialNodesSkPemFileName,
+		suite)
+	if err != nil {
+		return err
+	}
+	log.Debug("block sign pubkey", "hex", factory.GetPkEncoded(pubKey))
+
+	if ctx.IsSet(destinationShardAsObserver.Name) {
+		generalConfig.GeneralSettings.DestinationShardAsObserver = ctx.GlobalString(destinationShardAsObserver.Name)
+	}
+
+	if ctx.IsSet(networkID.Name) {
+		generalConfig.GeneralSettings.NetworkID = ctx.GlobalString(networkID.Name)
+	}
+
+	if ctx.IsSet(nodeDisplayName.Name) {
+		preferencesConfig.Preferences.NodeDisplayName = ctx.GlobalString(nodeDisplayName.Name)
+	}
+
+	shardCoordinator, nodeType, err := createShardCoordinator(nodesConfig, pubKey, generalConfig.GeneralSettings, log)
+	if err != nil {
+		return err
+	}
+
+	var workingDir = ""
+	if ctx.IsSet(workingDirectory.Name) {
+		workingDir = ctx.GlobalString(workingDirectory.Name)
+	} else {
+		workingDir, err = os.Getwd()
+		if err != nil {
+			log.LogIfError(err)
+			workingDir = ""
+		}
+	}
+	log.Trace("working directory", "path", workingDir)
+
+	var shardId = "metachain"
+	if shardCoordinator.SelfId() != sharding.MetachainShardId {
+		shardId = fmt.Sprintf("%d", shardCoordinator.SelfId())
+	}
+
+	uniqueDBFolder := filepath.Join(
+		workingDir,
+		defaultDBPath,
+		fmt.Sprintf("%s_%d", defaultEpochString, 0),
+		fmt.Sprintf("%s_%s", defaultShardString, shardId))
+
+	storageCleanup := ctx.GlobalBool(storageCleanup.Name)
+	if storageCleanup {
+		log.Trace("cleaning storage", "path", uniqueDBFolder)
+		err = os.RemoveAll(uniqueDBFolder)
+		if err != nil {
+			return err
+		}
+	}
+
+	log.Trace("creating core components")
+	coreArgs := factory.NewCoreComponentsFactoryArgs(generalConfig, uniqueDBFolder)
+	coreComponents, err := factory.CoreComponentsFactory(coreArgs)
+	if err != nil {
+		return err
+	}
+
+	log.Trace("creating nodes coordinator")
+	nodesCoordinator, err := createNodesCoordinator(
+		nodesConfig,
+		generalConfig.GeneralSettings,
+		pubKey,
+		coreComponents.Hasher)
+	if err != nil {
+		return err
+	}
+
+	log.Trace("creating state components")
+	stateArgs := factory.NewStateComponentsFactoryArgs(
+		generalConfig,
+		genesisConfig,
+		shardCoordinator,
+		coreComponents,
+		uniqueDBFolder,
+	)
+	stateComponents, err := factory.StateComponentsFactory(stateArgs)
+	if err != nil {
+		return err
+	}
+
+	log.Trace("initializing stats file")
+	err = initStatsFileMonitor(generalConfig, pubKey, log, workingDir)
+	if err != nil {
+		return err
+	}
+
+	var appStatusHandlers []core.AppStatusHandler
+	var views []factoryViews.Viewer
+
+	prometheusJoinUrl, usePrometheusBool := getPrometheusJoinURLIfAvailable(ctx)
+	if usePrometheusBool {
+		log.Warn("using prometheus", "status", "DEPRECATED")
+		prometheusStatusHandler := statusHandler.NewPrometheusStatusHandler()
+		appStatusHandlers = append(appStatusHandlers, prometheusStatusHandler)
+	}
+
+	presenterStatusHandler := factory.CreateStatusHandlerPresenter()
+
+	useTermui := !ctx.GlobalBool(useLogView.Name)
+	if useTermui {
+		log.Trace("using termui mode")
+		views, err = factory.CreateViews(presenterStatusHandler)
+		if err != nil {
+			return err
+		}
+
+		writer, ok := presenterStatusHandler.(io.Writer)
+		if ok {
+			logger.ClearLogObservers()
+			err = logger.AddLogObserver(writer, &logger.PlainFormatter{})
+			if err != nil {
+				return err
+			}
+		}
+
+		appStatusHandler, ok := presenterStatusHandler.(core.AppStatusHandler)
+		if ok {
+			appStatusHandlers = append(appStatusHandlers, appStatusHandler)
+		}
+	}
+
+	if views == nil {
+		log.Info("using log view mode")
+	}
+
+	statusMetrics := statusHandler.NewStatusMetrics()
+	appStatusHandlers = append(appStatusHandlers, statusMetrics)
+
+	if len(appStatusHandlers) > 0 {
+		coreComponents.StatusHandler, err = statusHandler.NewAppStatusFacadeWithHandlers(appStatusHandlers...)
+		if err != nil {
+			log.Debug("cannot init AppStatusFacade",
+				"error", err.Error(),
+			)
+		}
+	} else {
+		coreComponents.StatusHandler = statusHandler.NewNilStatusHandler()
+		log.Debug("no AppStatusHandler used, started with NilStatusHandler")
+	}
+
+	log.Trace("initializing metrics")
+	metrics.InitMetrics(coreComponents.StatusHandler, pubKey, nodeType, shardCoordinator, nodesConfig, version, economicsConfig)
+
+	log.Trace("creating data components")
+	dataArgs := factory.NewDataComponentsFactoryArgs(generalConfig, shardCoordinator, coreComponents, uniqueDBFolder)
+	dataComponents, err := factory.DataComponentsFactory(dataArgs)
+	if err != nil {
+		return err
+	}
+
+	log.Trace("creating crypto components")
+	cryptoArgs := factory.NewCryptoComponentsFactoryArgs(
+		ctx,
+		generalConfig,
+		nodesConfig,
+		shardCoordinator,
+		keyGen,
+		privKey,
+		log,
+		initialBalancesSkPemFile.Name,
+		txSignSk.Name,
+		txSignSkIndex.Name,
+	)
+	cryptoComponents, err := factory.CryptoComponentsFactory(cryptoArgs)
+	if err != nil {
+		return err
+	}
+
+	txSignPk := factory.GetPkEncoded(cryptoComponents.TxSignPubKey)
+	metrics.SaveCurrentNodeNameAndPubKey(coreComponents.StatusHandler, txSignPk, preferencesConfig.Preferences.NodeDisplayName)
+
+	sessionInfoFileOutput := fmt.Sprintf("%s:%s\n%s:%s\n%s:%s\n%s:%v\n%s:%s\n%s:%v\n",
+		"PkBlockSign", factory.GetPkEncoded(pubKey),
+		"PkAccount", factory.GetPkEncoded(cryptoComponents.TxSignPubKey),
+		"ShardId", shardId,
+		"TotalShards", shardCoordinator.NumberOfShards(),
+		"AppVersion", version,
+		"GenesisTimeStamp", startTime.Unix(),
+	)
+
+	sessionInfoFileOutput += fmt.Sprintf("\nStarted with parameters:\n")
+	for _, flag := range ctx.App.Flags {
+		flagValue := fmt.Sprintf("%v", ctx.GlobalGeneric(flag.GetName()))
+		if flagValue != "" {
+			sessionInfoFileOutput += fmt.Sprintf("%s = %v\n", flag.GetName(), flagValue)
+		}
+	}
+
+	statsFile := filepath.Join(workingDir, defaultStatsPath, "session.info")
+	err = ioutil.WriteFile(statsFile, []byte(sessionInfoFileOutput), os.ModePerm)
+	log.LogIfError(err)
+
+	log.Trace("creating network components")
+	networkComponents, err := factory.NetworkComponentsFactory(p2pConfig, log, coreComponents)
+	if err != nil {
+		return err
+	}
+
+	log.Trace("creating tps benchmark components")
+	tpsBenchmark, err := statistics.NewTPSBenchmark(shardCoordinator.NumberOfShards(), nodesConfig.RoundDuration/1000)
+	if err != nil {
+		return err
+	}
+
+	if generalConfig.Explorer.Enabled {
+		log.Trace("creating elastic search components")
+		serversConfigurationFileName := ctx.GlobalString(serversConfigurationFile.Name)
+		dbIndexer, err = createElasticIndexer(
+			ctx,
+			serversConfigurationFileName,
+			generalConfig.Explorer.IndexerURL,
+			shardCoordinator,
+			coreComponents.Marshalizer,
+			coreComponents.Hasher,
+		)
+		if err != nil {
+			return err
+		}
+
+		err = setServiceContainer(shardCoordinator, tpsBenchmark)
+		if err != nil {
+			return err
+		}
+	}
+
+	log.Trace("creating economics data components")
+	economicsData, err := economics.NewEconomicsData(economicsConfig)
+	if err != nil {
+		return err
+	}
+
+	log.Trace("creating process components")
+	processArgs := factory.NewProcessComponentsFactoryArgs(
+		coreArgs,
+		genesisConfig,
+		economicsData,
+		nodesConfig,
+		syncer,
+		shardCoordinator,
+		nodesCoordinator,
+		dataComponents,
+		coreComponents,
+		cryptoComponents,
+		stateComponents,
+		networkComponents,
+		coreServiceContainer,
+	)
+	processComponents, err := factory.ProcessComponentsFactory(processArgs)
+	if err != nil {
+		return err
+	}
+
+	var elasticIndexer indexer.Indexer
+	if coreServiceContainer == nil || coreServiceContainer.IsInterfaceNil() {
+		elasticIndexer = nil
+	} else {
+		elasticIndexer = coreServiceContainer.Indexer()
+	}
+
+	log.Trace("creating node structure")
+	currentNode, err := createNode(
+		generalConfig,
+		preferencesConfig,
+		nodesConfig,
+		economicsData,
+		syncer,
+		keyGen,
+		privKey,
+		pubKey,
+		shardCoordinator,
+		nodesCoordinator,
+		coreComponents,
+		stateComponents,
+		dataComponents,
+		cryptoComponents,
+		processComponents,
+		networkComponents,
+		ctx.GlobalUint64(bootstrapRoundIndex.Name),
+		version,
+		elasticIndexer,
+	)
+	if err != nil {
+		return err
+	}
+
+	log.Trace("creating software checker structure")
+	softwareVersionChecker, err := factory.CreateSoftwareVersionChecker(coreComponents.StatusHandler)
+	if err != nil {
+		log.Debug("nil software version checker", "error", err.Error())
+	} else {
+		softwareVersionChecker.StartCheckSoftwareVersion()
+	}
+
+	if shardCoordinator.SelfId() == sharding.MetachainShardId {
+		log.Trace("activating nodesCoordinator's validators indexing")
+		indexValidatorsListIfNeeded(elasticIndexer, nodesCoordinator)
+	}
+
+	log.Trace("creating api resolver structure")
+	apiResolver, err := createApiResolver(
+		stateComponents.AccountsAdapter,
+		stateComponents.AddressConverter,
+		dataComponents.Store,
+		dataComponents.Blkc,
+		coreComponents.Marshalizer,
+		coreComponents.Uint64ByteSliceConverter,
+		shardCoordinator,
+		statusMetrics,
+		economicsData,
+	)
+	if err != nil {
+		return err
+	}
+
+	log.Trace("starting status pooling components")
+	err = metrics.StartStatusPolling(
+		currentNode.GetAppStatusHandler(),
+		generalConfig.GeneralSettings.StatusPollingIntervalSec,
+		networkComponents,
+		processComponents,
+	)
+	if err != nil {
+		return err
+	}
+
+	updateMachineStatisticsDurationSec := 1
+	err = metrics.StartMachineStatisticsPolling(coreComponents.StatusHandler, updateMachineStatisticsDurationSec)
+	if err != nil {
+		return err
+	}
+
+	log.Trace("creating elrond node facade")
+	restAPIServerDebugMode := ctx.GlobalBool(restApiDebug.Name)
+	ef := facade.NewElrondNodeFacade(currentNode, apiResolver, restAPIServerDebugMode)
+
+	efConfig := &config.FacadeConfig{
+		RestApiInterface:  ctx.GlobalString(restApiInterface.Name),
+		PprofEnabled:      ctx.GlobalBool(profileMode.Name),
+		Prometheus:        usePrometheusBool,
+		PrometheusJoinURL: prometheusJoinUrl,
+		PrometheusJobName: generalConfig.GeneralSettings.NetworkID,
+	}
+
+	ef.SetSyncer(syncer)
+	ef.SetTpsBenchmark(tpsBenchmark)
+	ef.SetConfig(efConfig)
+
+	log.Trace("starting background services")
+	ef.StartBackgroundServices()
+
+	log.Debug("bootstrapping node...")
+	err = ef.StartNode()
+	if err != nil {
+		log.Error("starting node failed", err.Error())
+		return err
+	}
+
+	log.Info("application is now running")
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	<-sigs
-	fmt.Println("terminating at user's signal...")
+	log.Info("terminating at user's signal...")
+
+	if rm != nil {
+		err = rm.Close()
+		log.LogIfError(err)
+	}
+	return nil
+}
+
+func indexValidatorsListIfNeeded(elasticIndexer indexer.Indexer, coordinator sharding.NodesCoordinator) {
+	if elasticIndexer == nil || elasticIndexer.IsInterfaceNil() {
+		return
+	}
+
+	validatorsPubKeys := coordinator.GetAllValidatorsPublicKeys()
+
+	if validatorsPubKeys != nil {
+		go elasticIndexer.SaveValidatorsPubKeys(validatorsPubKeys)
+	}
+}
+
+func getPrometheusJoinURLIfAvailable(ctx *cli.Context) (string, bool) {
+	prometheusURLAvailable := true
+	prometheusJoinUrl, err := getPrometheusJoinURL(ctx.GlobalString(serversConfigurationFile.Name))
+	if err != nil || prometheusJoinUrl == "" {
+		prometheusURLAvailable = false
+	}
+	usePrometheusBool := ctx.GlobalBool(usePrometheus.Name) && prometheusURLAvailable
+
+	return prometheusJoinUrl, usePrometheusBool
+}
+
+func getPrometheusJoinURL(serversConfigurationFileName string) (string, error) {
+	serversConfig, err := core.LoadServersPConfig(serversConfigurationFileName)
+	if err != nil {
+		return "", err
+	}
+	baseURL := serversConfig.Prometheus.PrometheusBaseURL
+	statusURL := baseURL + serversConfig.Prometheus.StatusRoute
+	resp, err := http.Get(statusURL)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return "", errors.New("prometheus URL not available")
+	}
+	joinURL := baseURL + serversConfig.Prometheus.JoinRoute
+	return joinURL, nil
+}
+
+func enableGopsIfNeeded(ctx *cli.Context, log logger.Logger) {
+	var gopsEnabled bool
+	if ctx.IsSet(gopsEn.Name) {
+		gopsEnabled = ctx.GlobalBool(gopsEn.Name)
+	}
+
+	if gopsEnabled {
+		if err := agent.Listen(agent.Options{}); err != nil {
+			log.Error("failure to init gops", "error", err.Error())
+		}
+	}
+
+	log.Trace("gops", "enabled", gopsEnabled)
+}
+
+func loadMainConfig(filepath string) (*config.Config, error) {
+	cfg := &config.Config{}
+	err := core.LoadTomlFile(cfg, filepath)
+	if err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
+func loadEconomicsConfig(filepath string) (*config.ConfigEconomics, error) {
+	cfg := &config.ConfigEconomics{}
+	err := core.LoadTomlFile(cfg, filepath)
+	if err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
+func loadPreferencesConfig(filepath string) (*config.ConfigPreferences, error) {
+	cfg := &config.ConfigPreferences{}
+	err := core.LoadTomlFile(cfg, filepath)
+	if err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
+func getShardIdFromNodePubKey(pubKey crypto.PublicKey, nodesConfig *sharding.NodesSetup) (uint32, error) {
+	if pubKey == nil {
+		return 0, errors.New("nil public key")
+	}
+
+	publicKey, err := pubKey.ToByteArray()
+	if err != nil {
+		return 0, err
+	}
+
+	selfShardId, err := nodesConfig.GetShardIDForPubKey(publicKey)
+	if err != nil {
+		return 0, err
+	}
+
+	return selfShardId, err
+}
+
+func createShardCoordinator(
+	nodesConfig *sharding.NodesSetup,
+	pubKey crypto.PublicKey,
+	settingsConfig config.GeneralSettingsConfig,
+	log logger.Logger,
+) (sharding.Coordinator, core.NodeType, error) {
+	selfShardId, err := getShardIdFromNodePubKey(pubKey, nodesConfig)
+	nodeType := core.NodeTypeValidator
+	if err == sharding.ErrPublicKeyNotFoundInGenesis {
+		nodeType = core.NodeTypeObserver
+		log.Info("starting as observer node")
+
+		selfShardId, err = processDestinationShardAsObserver(settingsConfig)
+	}
+	if err != nil {
+		return nil, "", err
+	}
+
+	var shardName string
+	if selfShardId == sharding.MetachainShardId {
+		shardName = metachainShardName
+	} else {
+		shardName = fmt.Sprintf("%d", selfShardId)
+	}
+	log.Info("shard info", "started in shard", shardName)
+
+	shardCoordinator, err := sharding.NewMultiShardCoordinator(nodesConfig.NumberOfShards(), selfShardId)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return shardCoordinator, nodeType, nil
+}
+
+func createNodesCoordinator(
+	nodesConfig *sharding.NodesSetup,
+	settingsConfig config.GeneralSettingsConfig,
+	pubKey crypto.PublicKey,
+	hasher hashing.Hasher,
+) (sharding.NodesCoordinator, error) {
+
+	shardId, err := getShardIdFromNodePubKey(pubKey, nodesConfig)
+	if err == sharding.ErrPublicKeyNotFoundInGenesis {
+		shardId, err = processDestinationShardAsObserver(settingsConfig)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	nbShards := nodesConfig.NumberOfShards()
+	shardConsensusGroupSize := int(nodesConfig.ConsensusGroupSize)
+	metaConsensusGroupSize := int(nodesConfig.MetaChainConsensusGroupSize)
+	initNodesInfo := nodesConfig.InitialNodesInfo()
+	initValidators := make(map[uint32][]sharding.Validator)
+
+	for shId, nodeInfoList := range initNodesInfo {
+		validators := make([]sharding.Validator, 0)
+		for _, nodeInfo := range nodeInfoList {
+			validator, err := sharding.NewValidator(big.NewInt(0), 0, nodeInfo.PubKey(), nodeInfo.Address())
+			if err != nil {
+				return nil, err
+			}
+
+			validators = append(validators, validator)
+		}
+		initValidators[shId] = validators
+	}
+
+	pubKeyBytes, err := pubKey.ToByteArray()
+	if err != nil {
+		return nil, err
+	}
+
+	argumentsNodesCoordinator := sharding.ArgNodesCoordinator{
+		ShardConsensusGroupSize: shardConsensusGroupSize,
+		MetaConsensusGroupSize:  metaConsensusGroupSize,
+		Hasher:                  hasher,
+		ShardId:                 shardId,
+		NbShards:                nbShards,
+		Nodes:                   initValidators,
+		SelfPublicKey:           pubKeyBytes,
+	}
+	nodesCoordinator, err := sharding.NewIndexHashedNodesCoordinator(argumentsNodesCoordinator)
+	if err != nil {
+		return nil, err
+	}
+
+	return nodesCoordinator, nil
+}
+
+func processDestinationShardAsObserver(settingsConfig config.GeneralSettingsConfig) (uint32, error) {
+	destShard := strings.ToLower(settingsConfig.DestinationShardAsObserver)
+	if len(destShard) == 0 {
+		return 0, errors.New("option DestinationShardAsObserver is not set in config.toml")
+	}
+	if destShard == metachainShardName {
+		return sharding.MetachainShardId, nil
+	}
+
+	val, err := strconv.ParseUint(destShard, 10, 32)
+	if err != nil {
+		return 0, errors.New("error parsing DestinationShardAsObserver option: " + err.Error())
+	}
+
+	return uint32(val), err
+}
+
+// createElasticIndexer creates a new elasticIndexer where the server listens on the url,
+// authentication for the server is using the username and password
+func createElasticIndexer(
+	ctx *cli.Context,
+	serversConfigurationFileName string,
+	url string,
+	coordinator sharding.Coordinator,
+	marshalizer marshal.Marshalizer,
+	hasher hashing.Hasher,
+) (indexer.Indexer, error) {
+	serversConfig, err := core.LoadServersPConfig(serversConfigurationFileName)
+	if err != nil {
+		return nil, err
+	}
+
+	dbIndexer, err = indexer.NewElasticIndexer(
+		url,
+		serversConfig.ElasticSearch.Username,
+		serversConfig.ElasticSearch.Password,
+		coordinator,
+		marshalizer,
+		hasher,
+		&indexer.Options{TxIndexingEnabled: ctx.GlobalBoolT(enableTxIndexing.Name)})
+	if err != nil {
+		return nil, err
+	}
+
+	return dbIndexer, nil
+}
+
+func getConsensusGroupSize(nodesConfig *sharding.NodesSetup, shardCoordinator sharding.Coordinator) (uint32, error) {
+	if shardCoordinator.SelfId() == sharding.MetachainShardId {
+		return nodesConfig.MetaChainConsensusGroupSize, nil
+	}
+	if shardCoordinator.SelfId() < shardCoordinator.NumberOfShards() {
+		return nodesConfig.ConsensusGroupSize, nil
+	}
+
+	return 0, state.ErrUnknownShardId
+}
+
+func createNode(
+	config *config.Config,
+	preferencesConfig *config.ConfigPreferences,
+	nodesConfig *sharding.NodesSetup,
+	economicsData process.FeeHandler,
+	syncer ntp.SyncTimer,
+	keyGen crypto.KeyGenerator,
+	privKey crypto.PrivateKey,
+	pubKey crypto.PublicKey,
+	shardCoordinator sharding.Coordinator,
+	nodesCoordinator sharding.NodesCoordinator,
+	core *factory.Core,
+	state *factory.State,
+	data *factory.Data,
+	crypto *factory.Crypto,
+	process *factory.Process,
+	network *factory.Network,
+	bootstrapRoundIndex uint64,
+	version string,
+	indexer indexer.Indexer,
+) (*node.Node, error) {
+	consensusGroupSize, err := getConsensusGroupSize(nodesConfig, shardCoordinator)
+	if err != nil {
+		return nil, err
+	}
+
+	nd, err := node.NewNode(
+		node.WithMessenger(network.NetMessenger),
+		node.WithHasher(core.Hasher),
+		node.WithMarshalizer(core.Marshalizer),
+		node.WithTxFeeHandler(economicsData),
+		node.WithInitialNodesPubKeys(crypto.InitialPubKeys),
+		node.WithAddressConverter(state.AddressConverter),
+		node.WithAccountsAdapter(state.AccountsAdapter),
+		node.WithBlockChain(data.Blkc),
+		node.WithDataStore(data.Store),
+		node.WithRoundDuration(nodesConfig.RoundDuration),
+		node.WithConsensusGroupSize(int(consensusGroupSize)),
+		node.WithSyncer(syncer),
+		node.WithBlockProcessor(process.BlockProcessor),
+		node.WithGenesisTime(time.Unix(nodesConfig.StartTime, 0)),
+		node.WithRounder(process.Rounder),
+		node.WithShardCoordinator(shardCoordinator),
+		node.WithNodesCoordinator(nodesCoordinator),
+		node.WithUint64ByteSliceConverter(core.Uint64ByteSliceConverter),
+		node.WithSingleSigner(crypto.SingleSigner),
+		node.WithMultiSigner(crypto.MultiSigner),
+		node.WithKeyGen(keyGen),
+		node.WithKeyGenForAccounts(crypto.TxSignKeyGen),
+		node.WithTxSignPubKey(crypto.TxSignPubKey),
+		node.WithTxSignPrivKey(crypto.TxSignPrivKey),
+		node.WithPubKey(pubKey),
+		node.WithPrivKey(privKey),
+		node.WithForkDetector(process.ForkDetector),
+		node.WithInterceptorsContainer(process.InterceptorsContainer),
+		node.WithResolversFinder(process.ResolversFinder),
+		node.WithConsensusType(config.Consensus.Type),
+		node.WithTxSingleSigner(crypto.TxSingleSigner),
+		node.WithTxStorageSize(config.TxStorage.Cache.Size),
+		node.WithBootstrapRoundIndex(bootstrapRoundIndex),
+		node.WithAppStatusHandler(core.StatusHandler),
+		node.WithIndexer(indexer),
+		node.WithBlackListHandler(process.BlackListHandler),
+		node.WithBootStorer(process.BootStorer),
+	)
+	if err != nil {
+		return nil, errors.New("error creating node: " + err.Error())
+	}
+
+	err = nd.StartHeartbeat(config.Heartbeat, version, preferencesConfig.Preferences.NodeDisplayName)
+	if err != nil {
+		return nil, err
+	}
+
+	if shardCoordinator.SelfId() < shardCoordinator.NumberOfShards() {
+		err = nd.ApplyOptions(
+			node.WithInitialNodesBalances(state.InBalanceForShard),
+			node.WithDataPool(data.Datapool),
+		)
+		if err != nil {
+			return nil, errors.New("error creating node: " + err.Error())
+		}
+		err = nd.CreateShardedStores()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if shardCoordinator.SelfId() == sharding.MetachainShardId {
+		err = nd.ApplyOptions(node.WithMetaDataPool(data.MetaDatapool))
+		if err != nil {
+			return nil, errors.New("error creating meta-node: " + err.Error())
+		}
+	}
+	return nd, nil
+}
+
+func initStatsFileMonitor(config *config.Config, pubKey crypto.PublicKey, log logger.Logger,
+	workingDir string) error {
+	publicKey, err := pubKey.ToByteArray()
+	if err != nil {
+		return err
+	}
+
+	hexPublicKey := core.GetTrimmedPk(hex.EncodeToString(publicKey))
+
+	statsFile, err := core.CreateFile(hexPublicKey, filepath.Join(workingDir, defaultStatsPath), "txt")
+	if err != nil {
+		return err
+	}
+	err = startStatisticsMonitor(statsFile, config.ResourceStats, log)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func setServiceContainer(shardCoordinator sharding.Coordinator, tpsBenchmark *statistics.TpsBenchmark) error {
+	var err error
+	if shardCoordinator.SelfId() < shardCoordinator.NumberOfShards() {
+		coreServiceContainer, err = serviceContainer.NewServiceContainer(serviceContainer.WithIndexer(dbIndexer))
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	if shardCoordinator.SelfId() == sharding.MetachainShardId {
+		coreServiceContainer, err = serviceContainer.NewServiceContainer(
+			serviceContainer.WithIndexer(dbIndexer),
+			serviceContainer.WithTPSBenchmark(tpsBenchmark))
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	return errors.New("could not init core service container")
+}
+
+func startStatisticsMonitor(file *os.File, config config.ResourceStatsConfig, log logger.Logger) error {
+	if !config.Enabled {
+		return nil
+	}
+
+	if config.RefreshIntervalInSec < 1 {
+		return errors.New("invalid RefreshIntervalInSec in section [ResourceStats]. Should be an integer higher than 1")
+	}
+
+	resMon, err := statistics.NewResourceMonitor(file)
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		for {
+			err = resMon.SaveStatistics()
+			log.LogIfError(err)
+			time.Sleep(time.Second * time.Duration(config.RefreshIntervalInSec))
+		}
+	}()
 
 	return nil
+}
+
+func createApiResolver(
+	accnts state.AccountsAdapter,
+	addrConv state.AddressConverter,
+	storageService dataRetriever.StorageService,
+	blockChain data.ChainHandler,
+	marshalizer marshal.Marshalizer,
+	uint64Converter typeConverters.Uint64ByteSliceConverter,
+	shardCoordinator sharding.Coordinator,
+	statusMetrics external.StatusMetricsHandler,
+	economics *economics.EconomicsData,
+) (facade.ApiResolver, error) {
+	var vmFactory process.VirtualMachinesContainerFactory
+	var err error
+
+	argsHook := hooks.ArgBlockChainHook{
+		Accounts:         accnts,
+		AddrConv:         addrConv,
+		StorageService:   storageService,
+		BlockChain:       blockChain,
+		ShardCoordinator: shardCoordinator,
+		Marshalizer:      marshalizer,
+		Uint64Converter:  uint64Converter,
+	}
+
+	if shardCoordinator.SelfId() == sharding.MetachainShardId {
+		vmFactory, err = metachain.NewVMContainerFactory(argsHook, economics)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		vmFactory, err = shard.NewVMContainerFactory(argsHook)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	vmContainer, err := vmFactory.Create()
+	if err != nil {
+		return nil, err
+	}
+
+	scDataGetter, err := smartContract.NewSCDataGetter(addrConv, vmContainer)
+	if err != nil {
+		return nil, err
+	}
+
+	return external.NewNodeApiResolver(scDataGetter, statusMetrics)
 }
