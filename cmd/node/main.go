@@ -298,7 +298,5 @@ func startNode(_ *cli.Context, version string) error {
 	<-sigs
 	fmt.Println("terminating at user's signal...")
 
-	//usless instruction
-
 	return nil
 }
