@@ -33,7 +33,7 @@ type ArgBaseProcessor struct {
 	TxCoordinator                process.TransactionCoordinator
 	ValidatorStatisticsProcessor process.ValidatorStatisticsProcessor
 	Rounder                      consensus.Rounder
-	BootstrapStorer              process.BootStorer
+	BootStorer                   process.BootStorer
 }
 
 // ArgShardProcessor holds all dependencies required by the process data factory in order to create
@@ -49,7 +49,7 @@ type ArgShardProcessor struct {
 type ArgMetaProcessor struct {
 	ArgBaseProcessor
 	DataPool           dataRetriever.MetaPoolsHolder
-	SCDataGetter       external.ScDataGetter
+	SCDataGetter       external.SCQueryService
 	PeerChangesHandler process.PeerChangesHandler
 	SCToProtocol       process.SmartContractToProtocolHandler
 }

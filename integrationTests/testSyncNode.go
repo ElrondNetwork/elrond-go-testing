@@ -8,7 +8,6 @@ import (
 	"github.com/ElrondNetwork/elrond-go-testing/consensus/spos/sposFactory"
 	"github.com/ElrondNetwork/elrond-go-testing/dataRetriever"
 	"github.com/ElrondNetwork/elrond-go-testing/integrationTests/mock"
-	"github.com/ElrondNetwork/elrond-go-testing/process"
 	"github.com/ElrondNetwork/elrond-go-testing/process/block"
 	"github.com/ElrondNetwork/elrond-go-testing/process/block/bootstrapStorage"
 	"github.com/ElrondNetwork/elrond-go-testing/process/smartContract"
@@ -87,7 +86,7 @@ func (tpn *TestProcessorNode) initTestNodeWithSync() {
 	tpn.initBootstrapper()
 	tpn.setGenesisBlock()
 	tpn.initNode()
-	tpn.ScDataGetter, _ = smartContract.NewSCDataGetter(TestAddressConverter, tpn.VMContainer)
+	tpn.SCQueryService, _ = smartContract.NewSCQueryService(tpn.VMContainer, tpn.EconomicsData.MaxGasLimitPerBlock())
 	tpn.addHandlersForCounters()
 	tpn.addGenesisBlocksIntoStorage()
 }
@@ -126,7 +125,7 @@ func (tpn *TestProcessorNode) initBlockProcessorWithSync() {
 		BlockChainHook:               &mock.BlockChainHookHandlerMock{},
 		ValidatorStatisticsProcessor: &mock.ValidatorStatisticsProcessorMock{},
 		Rounder:                      &mock.RounderMock{},
-		BootstrapStorer: &mock.BoostrapStorerMock{
+		BootStorer: &mock.BoostrapStorerMock{
 			PutCalled: func(round int64, bootData bootstrapStorage.BootstrapData) error {
 				return nil
 			},
@@ -141,7 +140,7 @@ func (tpn *TestProcessorNode) initBlockProcessorWithSync() {
 		arguments := block.ArgMetaProcessor{
 			ArgBaseProcessor:   argumentsBase,
 			DataPool:           tpn.MetaDataPool,
-			SCDataGetter:       &mock.ScDataGetterMock{},
+			SCDataGetter:       &mock.ScQueryMock{},
 			SCToProtocol:       &mock.SCToProtocolStub{},
 			PeerChangesHandler: &mock.PeerChangesHandler{},
 		}
@@ -151,7 +150,7 @@ func (tpn *TestProcessorNode) initBlockProcessorWithSync() {
 	} else {
 		tpn.ForkDetector, _ = sync.NewShardForkDetector(tpn.Rounder, tpn.BlackListHandler)
 		argumentsBase.ForkDetector = tpn.ForkDetector
-		argumentsBase.BlockChainHook = tpn.BlockChainHookImpl.(process.BlockChainHookHandler)
+		argumentsBase.BlockChainHook = tpn.BlockchainHook
 		argumentsBase.TxCoordinator = tpn.TxCoordinator
 		arguments := block.ArgShardProcessor{
 			ArgBaseProcessor: argumentsBase,

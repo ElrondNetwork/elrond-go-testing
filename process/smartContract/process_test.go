@@ -2,7 +2,6 @@ package smartContract
 
 import (
 	"bytes"
-	"crypto/rand"
 	"math/big"
 	"testing"
 
@@ -10,19 +9,11 @@ import (
 	"github.com/ElrondNetwork/elrond-go-testing/data/state"
 	"github.com/ElrondNetwork/elrond-go-testing/data/transaction"
 	"github.com/ElrondNetwork/elrond-go-testing/process"
-	"github.com/ElrondNetwork/elrond-go-testing/process/coordinator"
 	"github.com/ElrondNetwork/elrond-go-testing/process/mock"
 	"github.com/ElrondNetwork/elrond-vm-common"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 )
-
-func generateRandomByteSlice(size int) []byte {
-	buff := make([]byte, size)
-	_, _ = rand.Reader.Read(buff)
-
-	return buff
-}
 
 func generateEmptyByteSlice(size int) []byte {
 	buff := make([]byte, size)
@@ -68,6 +59,7 @@ func TestNewSmartContractProcessorNilVM(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 
@@ -89,6 +81,7 @@ func TestNewSmartContractProcessorNilArgsParser(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 
@@ -110,6 +103,7 @@ func TestNewSmartContractProcessorNilHasher(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 
@@ -131,6 +125,7 @@ func TestNewSmartContractProcessorNilMarshalizer(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 
@@ -152,6 +147,7 @@ func TestNewSmartContractProcessorNilAccountsDB(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 
@@ -173,6 +169,7 @@ func TestNewSmartContractProcessorNilAdrConv(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 
@@ -194,6 +191,7 @@ func TestNewSmartContractProcessorNilShardCoordinator(t *testing.T) {
 		nil,
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 
@@ -215,6 +213,7 @@ func TestNewSmartContractProcessorNilFakeAccountsHandler(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 
@@ -236,6 +235,7 @@ func TestNewSmartContractProcessor_NilIntermediateMock(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		nil,
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 
@@ -257,6 +257,7 @@ func TestNewSmartContractProcessor_ErrNilUnsignedTxHandlerMock(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		nil,
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 
@@ -278,6 +279,7 @@ func TestNewSmartContractProcessor_ErrErrNilGasHandlerMock(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		nil,
 	)
 
@@ -299,189 +301,12 @@ func TestNewSmartContractProcessor(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 
 	assert.NotNil(t, sc)
 	assert.Nil(t, err)
-}
-
-func TestScProcessor_ComputeTransactionTypeNil(t *testing.T) {
-	t.Parallel()
-
-	sc, err := NewSmartContractProcessor(
-		&mock.VMContainerMock{},
-		&mock.ArgumentParserMock{},
-		&mock.HasherMock{},
-		&mock.MarshalizerMock{},
-		&mock.AccountsStub{},
-		&mock.TemporaryAccountsHandlerMock{},
-		&mock.AddressConverterMock{},
-		mock.NewMultiShardsCoordinatorMock(5),
-		&mock.IntermediateTransactionHandlerMock{},
-		&mock.UnsignedTxHandlerMock{},
-		&mock.GasHandlerMock{},
-	)
-
-	assert.NotNil(t, sc)
-	assert.Nil(t, err)
-
-	_, err = sc.ComputeTransactionType(nil)
-	assert.Equal(t, process.ErrNilTransaction, err)
-}
-
-func TestScProcessor_ComputeTransactionTypeNilTx(t *testing.T) {
-	t.Parallel()
-
-	sc, err := NewSmartContractProcessor(
-		&mock.VMContainerMock{},
-		&mock.ArgumentParserMock{},
-		&mock.HasherMock{},
-		&mock.MarshalizerMock{},
-		&mock.AccountsStub{},
-		&mock.TemporaryAccountsHandlerMock{},
-		&mock.AddressConverterMock{},
-		mock.NewMultiShardsCoordinatorMock(5),
-		&mock.IntermediateTransactionHandlerMock{},
-		&mock.UnsignedTxHandlerMock{},
-		&mock.GasHandlerMock{},
-	)
-
-	assert.NotNil(t, sc)
-	assert.Nil(t, err)
-
-	tx := &transaction.Transaction{}
-	tx.Nonce = 0
-	tx.SndAddr = []byte("SRC")
-	tx.RcvAddr = []byte("DST")
-	tx.Value = big.NewInt(45)
-
-	tx = nil
-	_, err = sc.ComputeTransactionType(tx)
-	assert.Equal(t, process.ErrNilTransaction, err)
-}
-
-func TestScProcessor_ComputeTransactionTypeErrWrongTransaction(t *testing.T) {
-	t.Parallel()
-
-	sc, err := NewSmartContractProcessor(
-		&mock.VMContainerMock{},
-		&mock.ArgumentParserMock{},
-		&mock.HasherMock{},
-		&mock.MarshalizerMock{},
-		&mock.AccountsStub{},
-		&mock.TemporaryAccountsHandlerMock{},
-		&mock.AddressConverterMock{},
-		mock.NewMultiShardsCoordinatorMock(5),
-		&mock.IntermediateTransactionHandlerMock{},
-		&mock.UnsignedTxHandlerMock{},
-		&mock.GasHandlerMock{},
-	)
-
-	assert.NotNil(t, sc)
-	assert.Nil(t, err)
-
-	tx := &transaction.Transaction{}
-	tx.Nonce = 0
-	tx.SndAddr = []byte("SRC")
-	tx.RcvAddr = nil
-	tx.Value = big.NewInt(45)
-
-	_, err = sc.ComputeTransactionType(tx)
-	assert.Equal(t, process.ErrWrongTransaction, err)
-}
-
-func TestScProcessor_ComputeTransactionTypeScDeployment(t *testing.T) {
-	t.Parallel()
-
-	addressConverter := &mock.AddressConverterMock{}
-
-	txTypeHandler, err := coordinator.NewTxTypeHandler(
-		addressConverter,
-		mock.NewMultiShardsCoordinatorMock(5),
-		&mock.AccountsStub{
-			GetAccountWithJournalCalled: func(addressContainer state.AddressContainer) (handler state.AccountHandler, e error) {
-				return nil, nil
-			},
-		},
-	)
-
-	assert.NotNil(t, txTypeHandler)
-	assert.Nil(t, err)
-
-	tx := &transaction.Transaction{}
-	tx.Nonce = 0
-	tx.SndAddr = []byte("SRC")
-	tx.RcvAddr = make([]byte, addressConverter.AddressLen())
-	tx.Data = "data"
-	tx.Value = big.NewInt(45)
-
-	txType, err := txTypeHandler.ComputeTransactionType(tx)
-	assert.Nil(t, err)
-	assert.Equal(t, process.SCDeployment, txType)
-}
-
-func TestScProcessor_ComputeTransactionTypeScInvoking(t *testing.T) {
-	t.Parallel()
-
-	addrConverter := &mock.AddressConverterMock{}
-	tx := &transaction.Transaction{}
-	tx.Nonce = 0
-	tx.SndAddr = []byte("SRC")
-	tx.RcvAddr = generateRandomByteSlice(addrConverter.AddressLen())
-	tx.Data = "data"
-	tx.Value = big.NewInt(45)
-
-	_, acntDst := createAccounts(tx)
-	acntDst.SetCode([]byte("code"))
-
-	txTypeHandler, err := coordinator.NewTxTypeHandler(
-		addrConverter,
-		mock.NewMultiShardsCoordinatorMock(5),
-		&mock.AccountsStub{
-			GetAccountWithJournalCalled: func(addressContainer state.AddressContainer) (handler state.AccountHandler, e error) {
-				return acntDst, nil
-			},
-		},
-	)
-
-	assert.NotNil(t, txTypeHandler)
-	assert.Nil(t, err)
-
-	txType, err := txTypeHandler.ComputeTransactionType(tx)
-	assert.Nil(t, err)
-	assert.Equal(t, process.SCInvoking, txType)
-}
-
-func TestScProcessor_ComputeTransactionTypeMoveBalance(t *testing.T) {
-	t.Parallel()
-
-	addrConverter := &mock.AddressConverterMock{}
-	tx := &transaction.Transaction{}
-	tx.Nonce = 0
-	tx.SndAddr = []byte("SRC")
-	tx.RcvAddr = generateRandomByteSlice(addrConverter.AddressLen())
-	tx.Data = "data"
-	tx.Value = big.NewInt(45)
-
-	_, acntDst := createAccounts(tx)
-
-	txTypeHandler, err := coordinator.NewTxTypeHandler(
-		addrConverter,
-		mock.NewMultiShardsCoordinatorMock(5),
-		&mock.AccountsStub{
-			GetAccountWithJournalCalled: func(addressContainer state.AddressContainer) (handler state.AccountHandler, e error) {
-				return acntDst, nil
-			},
-		},
-	)
-
-	assert.NotNil(t, txTypeHandler)
-	assert.Nil(t, err)
-
-	txType, err := txTypeHandler.ComputeTransactionType(tx)
-	assert.Nil(t, err)
-	assert.Equal(t, process.MoveBalance, txType)
 }
 
 func TestScProcessor_DeploySmartContractBadParse(t *testing.T) {
@@ -501,6 +326,7 @@ func TestScProcessor_DeploySmartContractBadParse(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -514,12 +340,14 @@ func TestScProcessor_DeploySmartContractBadParse(t *testing.T) {
 	tx.Value = big.NewInt(45)
 	acntSrc, _ := createAccounts(tx)
 
+	called := false
 	tmpError := errors.New("error")
 	argParser.ParseDataCalled = func(data string) error {
+		called = true
 		return tmpError
 	}
-	err = sc.DeploySmartContract(tx, acntSrc, 10)
-	assert.Equal(t, tmpError, err)
+	_ = sc.DeploySmartContract(tx, acntSrc, 10)
+	assert.True(t, called)
 }
 
 func TestScProcessor_DeploySmartContractRunError(t *testing.T) {
@@ -539,6 +367,7 @@ func TestScProcessor_DeploySmartContractRunError(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -554,7 +383,9 @@ func TestScProcessor_DeploySmartContractRunError(t *testing.T) {
 
 	tmpError := errors.New("error")
 	vm := &mock.VMExecutionHandlerStub{}
+	called := false
 	vm.RunSmartContractCreateCalled = func(input *vmcommon.ContractCreateInput) (output *vmcommon.VMOutput, e error) {
+		called = true
 		return nil, tmpError
 	}
 
@@ -563,14 +394,12 @@ func TestScProcessor_DeploySmartContractRunError(t *testing.T) {
 	}
 
 	vmArg := []byte("00")
-	argParser.GetArgumentsCalled = func() ([]*big.Int, error) {
-		args := make([]*big.Int, 0)
-		args = append(args, big.NewInt(0).SetBytes(vmArg))
-		return args, nil
+	argParser.GetArgumentsCalled = func() ([][]byte, error) {
+		return [][]byte{vmArg}, nil
 	}
 
-	err = sc.DeploySmartContract(tx, acntSrc, 10)
-	assert.Equal(t, tmpError, err)
+	_ = sc.DeploySmartContract(tx, acntSrc, 10)
+	assert.True(t, called)
 }
 
 func TestScProcessor_DeploySmartContractWrongTx(t *testing.T) {
@@ -589,6 +418,7 @@ func TestScProcessor_DeploySmartContractWrongTx(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -624,6 +454,7 @@ func TestScProcessor_DeploySmartContract(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{
 			SetGasRefundedCalled: func(gasRefunded uint64, hash []byte) {},
 		},
@@ -644,10 +475,8 @@ func TestScProcessor_DeploySmartContract(t *testing.T) {
 	}
 
 	vmArg := []byte("00")
-	argParser.GetArgumentsCalled = func() ([]*big.Int, error) {
-		args := make([]*big.Int, 0)
-		args = append(args, big.NewInt(0).SetBytes(vmArg))
-		return args, nil
+	argParser.GetArgumentsCalled = func() ([][]byte, error) {
+		return [][]byte{vmArg}, nil
 	}
 
 	err = sc.DeploySmartContract(tx, acntSrc, 10)
@@ -670,6 +499,7 @@ func TestScProcessor_ExecuteSmartContractTransactionNilTx(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -703,6 +533,7 @@ func TestScProcessor_ExecuteSmartContractTransactionNilAccount(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -744,6 +575,7 @@ func TestScProcessor_ExecuteSmartContractTransactionBadParser(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -759,11 +591,13 @@ func TestScProcessor_ExecuteSmartContractTransactionBadParser(t *testing.T) {
 
 	acntDst.SetCode([]byte("code"))
 	tmpError := errors.New("error")
+	called := false
 	argParser.ParseDataCalled = func(data string) error {
+		called = true
 		return tmpError
 	}
 	err = sc.ExecuteSmartContractTransaction(tx, acntSrc, acntDst, 10)
-	assert.Equal(t, tmpError, err)
+	assert.True(t, called)
 }
 
 func TestScProcessor_ExecuteSmartContractTransactionVMRunError(t *testing.T) {
@@ -782,6 +616,7 @@ func TestScProcessor_ExecuteSmartContractTransactionVMRunError(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -798,7 +633,9 @@ func TestScProcessor_ExecuteSmartContractTransactionVMRunError(t *testing.T) {
 	acntDst.SetCode([]byte("code"))
 	tmpError := errors.New("error")
 	vm := &mock.VMExecutionHandlerStub{}
+	called := false
 	vm.RunSmartContractCallCalled = func(input *vmcommon.ContractCallInput) (output *vmcommon.VMOutput, e error) {
+		called = true
 		return nil, tmpError
 	}
 	vmContainer.GetCalled = func(key []byte) (handler vmcommon.VMExecutionHandler, e error) {
@@ -806,7 +643,7 @@ func TestScProcessor_ExecuteSmartContractTransactionVMRunError(t *testing.T) {
 	}
 
 	err = sc.ExecuteSmartContractTransaction(tx, acntSrc, acntDst, 10)
-	assert.Equal(t, tmpError, err)
+	assert.True(t, called)
 }
 
 func TestScProcessor_ExecuteSmartContractTransaction(t *testing.T) {
@@ -826,6 +663,7 @@ func TestScProcessor_ExecuteSmartContractTransaction(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{
 			SetGasRefundedCalled: func(gasRefunded uint64, hash []byte) {},
 		},
@@ -866,6 +704,7 @@ func TestScProcessor_CreateVMCallInputWrongCode(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -903,6 +742,7 @@ func TestScProcessor_CreateVMCallInput(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -936,6 +776,7 @@ func TestScProcessor_CreateVMDeployInputBadFunction(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -953,10 +794,8 @@ func TestScProcessor_CreateVMDeployInputBadFunction(t *testing.T) {
 		return nil, tmpError
 	}
 	vmArg := []byte("00")
-	argParser.GetArgumentsCalled = func() ([]*big.Int, error) {
-		args := make([]*big.Int, 0)
-		args = append(args, big.NewInt(0).SetBytes(vmArg))
-		return args, nil
+	argParser.GetArgumentsCalled = func() ([][]byte, error) {
+		return [][]byte{vmArg}, nil
 	}
 
 	vmInput, vmType, err := sc.CreateVMDeployInput(tx)
@@ -981,6 +820,7 @@ func TestScProcessor_CreateVMDeployInput(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -994,10 +834,8 @@ func TestScProcessor_CreateVMDeployInput(t *testing.T) {
 	tx.Value = big.NewInt(45)
 
 	vmArg := []byte("00")
-	argParser.GetArgumentsCalled = func() ([]*big.Int, error) {
-		args := make([]*big.Int, 0)
-		args = append(args, big.NewInt(0).SetBytes(vmArg))
-		return args, nil
+	argParser.GetArgumentsCalled = func() ([][]byte, error) {
+		return [][]byte{vmArg}, nil
 	}
 
 	vmInput, vmType, err := sc.CreateVMDeployInput(tx)
@@ -1022,6 +860,7 @@ func TestScProcessor_CreateVMDeployInputNotEnoughArguments(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -1056,6 +895,7 @@ func TestScProcessor_CreateVMInputWrongArgument(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -1069,12 +909,51 @@ func TestScProcessor_CreateVMInputWrongArgument(t *testing.T) {
 	tx.Value = big.NewInt(45)
 
 	tmpError := errors.New("error")
-	argParser.GetArgumentsCalled = func() (ints []*big.Int, e error) {
+	argParser.GetArgumentsCalled = func() (ints [][]byte, e error) {
 		return nil, tmpError
 	}
 	vmInput, err := sc.CreateVMInput(tx)
 	assert.Nil(t, vmInput)
 	assert.Equal(t, tmpError, err)
+}
+
+func TestScProcessor_CreateVMInputNotEnoughGas(t *testing.T) {
+	t.Parallel()
+
+	vm := &mock.VMContainerMock{}
+	argParser := &mock.ArgumentParserMock{}
+	sc, err := NewSmartContractProcessor(
+		vm,
+		argParser,
+		&mock.HasherMock{},
+		&mock.MarshalizerMock{},
+		&mock.AccountsStub{},
+		&mock.TemporaryAccountsHandlerMock{},
+		&mock.AddressConverterMock{},
+		mock.NewMultiShardsCoordinatorMock(5),
+		&mock.IntermediateTransactionHandlerMock{},
+		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{
+			ComputeGasLimitCalled: func(tx process.TransactionWithFeeHandler) uint64 {
+				return 1000
+			},
+		},
+		&mock.GasHandlerMock{},
+	)
+	assert.NotNil(t, sc)
+	assert.Nil(t, err)
+
+	tx := &transaction.Transaction{}
+	tx.Nonce = 0
+	tx.SndAddr = []byte("SRC")
+	tx.RcvAddr = []byte("DST")
+	tx.Data = "data"
+	tx.Value = big.NewInt(45)
+	tx.GasLimit = 100
+
+	vmInput, err := sc.CreateVMInput(tx)
+	assert.Nil(t, vmInput)
+	assert.Equal(t, process.ErrNotEnoughGas, err)
 }
 
 func TestScProcessor_CreateVMInput(t *testing.T) {
@@ -1093,6 +972,7 @@ func TestScProcessor_CreateVMInput(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -1139,6 +1019,7 @@ func TestScProcessor_processVMOutputNilVMOutput(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -1166,6 +1047,7 @@ func TestScProcessor_processVMOutputNilTx(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -1194,6 +1076,7 @@ func TestScProcessor_processVMOutputNilSndAcc(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{
 			SetGasRefundedCalled: func(gasRefunded uint64, hash []byte) {},
 		},
@@ -1205,7 +1088,7 @@ func TestScProcessor_processVMOutputNilSndAcc(t *testing.T) {
 
 	vmOutput := &vmcommon.VMOutput{
 		GasRefund:    big.NewInt(0),
-		GasRemaining: big.NewInt(0),
+		GasRemaining: 0,
 	}
 	_, _, err = sc.processVMOutput(vmOutput, tx, nil, 10)
 	assert.Nil(t, err)
@@ -1228,6 +1111,7 @@ func TestScProcessor_processVMOutputNilDstAcc(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{
 			SetGasRefundedCalled: func(gasRefunded uint64, hash []byte) {},
 		},
@@ -1239,7 +1123,7 @@ func TestScProcessor_processVMOutputNilDstAcc(t *testing.T) {
 
 	vmOutput := &vmcommon.VMOutput{
 		GasRefund:    big.NewInt(0),
-		GasRemaining: big.NewInt(0),
+		GasRemaining: 0,
 	}
 
 	accntState.GetAccountWithJournalCalled = func(addressContainer state.AddressContainer) (handler state.AccountHandler, e error) {
@@ -1278,6 +1162,7 @@ func TestScProcessor_GetAccountFromAddressAccNotFound(t *testing.T) {
 		shardCoordinator,
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -1319,6 +1204,7 @@ func TestScProcessor_GetAccountFromAddrFaildAddressConv(t *testing.T) {
 		shardCoordinator,
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -1360,6 +1246,7 @@ func TestScProcessor_GetAccountFromAddrFailedGetExistingAccount(t *testing.T) {
 		shardCoordinator,
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -1401,6 +1288,7 @@ func TestScProcessor_GetAccountFromAddrAccNotInShard(t *testing.T) {
 		shardCoordinator,
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -1443,6 +1331,7 @@ func TestScProcessor_GetAccountFromAddr(t *testing.T) {
 		shardCoordinator,
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -1486,6 +1375,7 @@ func TestScProcessor_DeleteAccountsFailedAtRemove(t *testing.T) {
 		shardCoordinator,
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -1529,6 +1419,7 @@ func TestScProcessor_DeleteAccountsNotInShard(t *testing.T) {
 		shardCoordinator,
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -1577,6 +1468,7 @@ func TestScProcessor_DeleteAccountsInShard(t *testing.T) {
 		shardCoordinator,
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -1604,6 +1496,7 @@ func TestScProcessor_ProcessSCPaymentAccNotInShardShouldNotReturnError(t *testin
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 
@@ -1637,6 +1530,7 @@ func TestScProcessor_ProcessSCPaymentWrongTypeAssertion(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 
@@ -1674,6 +1568,7 @@ func TestScProcessor_ProcessSCPaymentNotEnoughBalance(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 
@@ -1714,6 +1609,7 @@ func TestScProcessor_ProcessSCPayment(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 
@@ -1752,6 +1648,7 @@ func TestScProcessor_RefundGasToSenderNilAndZeroRefund(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 
@@ -1795,6 +1692,7 @@ func TestScProcessor_RefundGasToSenderAccNotInShard(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 
@@ -1843,6 +1741,7 @@ func TestScProcessor_RefundGasToSender(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 
@@ -1886,6 +1785,7 @@ func TestScProcessor_processVMOutputNilOutput(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -1913,6 +1813,7 @@ func TestScProcessor_processVMOutputNilTransaction(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -1942,6 +1843,7 @@ func TestScProcessor_processVMOutput(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{
 			SetGasRefundedCalled: func(gasRefunded uint64, hash []byte) {},
 		},
@@ -1951,7 +1853,7 @@ func TestScProcessor_processVMOutput(t *testing.T) {
 
 	vmOutput := &vmcommon.VMOutput{
 		GasRefund:    big.NewInt(0),
-		GasRemaining: big.NewInt(0),
+		GasRemaining: 0,
 	}
 
 	accntState.GetAccountWithJournalCalled = func(addressContainer state.AddressContainer) (handler state.AccountHandler, e error) {
@@ -1981,6 +1883,7 @@ func TestScProcessor_processSCOutputAccounts(t *testing.T) {
 		mock.NewMultiShardsCoordinatorMock(5),
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -2063,6 +1966,7 @@ func TestScProcessor_processSCOutputAccountsNotInShard(t *testing.T) {
 		shardCoordinator,
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -2105,6 +2009,7 @@ func TestScProcessor_CreateCrossShardTransactions(t *testing.T) {
 		shardCoordinator,
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -2151,6 +2056,7 @@ func TestScProcessor_ProcessSmartContractResultNilScr(t *testing.T) {
 		shardCoordinator,
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -2180,6 +2086,7 @@ func TestScProcessor_ProcessSmartContractResultErrGetAccount(t *testing.T) {
 		shardCoordinator,
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -2207,6 +2114,7 @@ func TestScProcessor_ProcessSmartContractResultAccNotInShard(t *testing.T) {
 		shardCoordinator,
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -2239,6 +2147,7 @@ func TestScProcessor_ProcessSmartContractResultBadAccType(t *testing.T) {
 		shardCoordinator,
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -2274,6 +2183,7 @@ func TestScProcessor_ProcessSmartContractResultOutputBalanceNil(t *testing.T) {
 		shardCoordinator,
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -2315,6 +2225,7 @@ func TestScProcessor_ProcessSmartContractResultWithCode(t *testing.T) {
 		shardCoordinator,
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)
@@ -2360,6 +2271,7 @@ func TestScProcessor_ProcessSmartContractResultWithData(t *testing.T) {
 		shardCoordinator,
 		&mock.IntermediateTransactionHandlerMock{},
 		&mock.UnsignedTxHandlerMock{},
+		&mock.FeeHandlerStub{},
 		&mock.GasHandlerMock{},
 	)
 	assert.NotNil(t, sc)

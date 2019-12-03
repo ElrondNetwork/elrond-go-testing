@@ -2,17 +2,28 @@
 github.com/360EntSecGroup-Skylar/excelize
 # github.com/AndreasBriese/bbloom v0.0.0-20190306092124-e2d15f34fcf9
 github.com/AndreasBriese/bbloom
+# github.com/ElrondNetwork/arwen-wasm-vm v0.0.0-20191129150346-a0d43c8d42a1
+github.com/ElrondNetwork/arwen-wasm-vm/arwen
+github.com/ElrondNetwork/arwen-wasm-vm/arwen/context
+github.com/ElrondNetwork/arwen-wasm-vm/arwen/crypto
+github.com/ElrondNetwork/arwen-wasm-vm/arwen/elrondapi
+github.com/ElrondNetwork/arwen-wasm-vm/arwen/ethapi
+github.com/ElrondNetwork/arwen-wasm-vm/config
+# github.com/ElrondNetwork/big-int-util v0.0.5
+github.com/ElrondNetwork/big-int-util/twos-complement
 # github.com/ElrondNetwork/concurrent-map v0.1.2
 github.com/ElrondNetwork/concurrent-map
-# github.com/ElrondNetwork/elrond-vm v0.0.19
+# github.com/ElrondNetwork/elrond-vm v0.0.23
 github.com/ElrondNetwork/elrond-vm/iele/elrond/node/endpoint
 github.com/ElrondNetwork/elrond-vm/iele/elrond/node/hookadapter/blockchain
 github.com/ElrondNetwork/elrond-vm/iele/elrond/node/hookadapter/krypto
 github.com/ElrondNetwork/elrond-vm/iele/elrond/node/iele-testing-kompiled/ieletestinginterpreter
 github.com/ElrondNetwork/elrond-vm/iele/elrond/node/iele-testing-kompiled/ieletestingmodel
 github.com/ElrondNetwork/elrond-vm/iele/elrond/node/iele-testing-kompiled/koreparser
-# github.com/ElrondNetwork/elrond-vm-common v0.0.9
+# github.com/ElrondNetwork/elrond-vm-common v0.1.4
 github.com/ElrondNetwork/elrond-vm-common
+# github.com/ElrondNetwork/go-ext-wasm v0.1.0
+github.com/ElrondNetwork/go-ext-wasm/wasmer
 # github.com/StackExchange/wmi v0.0.0-20180116203802-5d049714c4a6
 github.com/StackExchange/wmi
 # github.com/beevik/ntp v0.2.0
@@ -258,6 +269,8 @@ github.com/minio/blake2b-simd
 github.com/minio/sha256-simd
 # github.com/mitchellh/go-wordwrap v0.0.0-20150314170334-ad45545899c7
 github.com/mitchellh/go-wordwrap
+# github.com/mitchellh/mapstructure v1.1.2
+github.com/mitchellh/mapstructure
 # github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd
 github.com/modern-go/concurrent
 # github.com/modern-go/reflect2 v1.0.1
@@ -324,7 +337,7 @@ github.com/shirou/w32
 github.com/spacemonkeygo/spacelog
 # github.com/spaolacci/murmur3 v1.1.0
 github.com/spaolacci/murmur3
-# github.com/stretchr/testify v1.3.0
+# github.com/stretchr/testify v1.4.0
 github.com/stretchr/testify/assert
 # github.com/syndtr/goleveldb v1.0.1-0.20190318030020-c3a204f8e965
 github.com/syndtr/goleveldb/leveldb

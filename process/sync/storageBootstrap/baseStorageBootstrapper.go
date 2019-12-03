@@ -1,8 +1,6 @@
 package storageBootstrap
 
 import (
-	"fmt"
-
 	"github.com/ElrondNetwork/elrond-go-testing/core"
 	"github.com/ElrondNetwork/elrond-go-testing/data"
 	"github.com/ElrondNetwork/elrond-go-testing/data/typeConverters"
@@ -49,7 +47,7 @@ type storageBootstrapper struct {
 
 func (st *storageBootstrapper) loadBlocks() error {
 	var err error
-	var storageHeaderInfo bootstrapStorage.BootstrapData
+	var headerInfo bootstrapStorage.BootstrapData
 
 	round := st.bootStorer.GetHighestRound()
 	storageHeadersInfo := make([]bootstrapStorage.BootstrapData, 0)
@@ -57,32 +55,32 @@ func (st *storageBootstrapper) loadBlocks() error {
 	log.Debug("Load blocks started...")
 
 	for {
-		storageHeaderInfo, err = st.bootStorer.Get(round)
+		headerInfo, err = st.bootStorer.Get(round)
 		if err != nil {
 			break
 		}
-		storageHeadersInfo = append(storageHeadersInfo, storageHeaderInfo)
+		storageHeadersInfo = append(storageHeadersInfo, headerInfo)
 
 		if uint64(round) > st.bootstrapRoundIndex {
-			round = storageHeaderInfo.LastRound
+			round = headerInfo.LastRound
 			continue
 		}
 
-		err = st.applyHeaderInfo(storageHeaderInfo)
+		err = st.applyHeaderInfo(headerInfo)
 		if err != nil {
-			round = storageHeaderInfo.LastRound
+			round = headerInfo.LastRound
 			continue
 		}
 
-		bootInfos, err := st.getBootInfos(storageHeaderInfo)
+		bootInfos, err := st.getBootInfos(headerInfo)
 		if err != nil {
-			round = storageHeaderInfo.LastRound
+			round = headerInfo.LastRound
 			continue
 		}
 
 		err = st.applyBootInfos(bootInfos)
 		if err != nil {
-			round = storageHeaderInfo.LastRound
+			round = headerInfo.LastRound
 			continue
 		}
 
@@ -94,41 +92,15 @@ func (st *storageBootstrapper) loadBlocks() error {
 		return process.ErrNotEnoughValidBlocksInStorage
 	}
 
-	var processedMiniBlocks map[string]map[string]struct{}
-	errNotCritical := st.marshalizer.Unmarshal(&processedMiniBlocks, storageHeaderInfo.ProcessedMiniBlocksBytes)
-	if errNotCritical != nil && storageHeaderInfo.ProcessedMiniBlocksBytes != nil {
-		log.Debug("cannot unmarshal base storage bootstrapper ",
-			"error", errNotCritical.Error())
-	}
-
-	log.Debug("processed mini blocks applied")
-	for metaBlockHash, miniBlockHashes := range processedMiniBlocks {
-		log.Debug("processed",
-			"meta hash", []byte(metaBlockHash))
-		for miniBlockHash := range miniBlockHashes {
-			log.Debug("processed",
-				"mini block hash", []byte(miniBlockHash))
-		}
-	}
+	processedMiniBlocks := process.ConvertSliceToProcessedMiniBlocksMap(headerInfo.ProcessedMiniBlocks)
+	st.displayProcessedMiniBlocks(processedMiniBlocks)
 
 	st.blkExecutor.ApplyProcessedMiniBlocks(processedMiniBlocks)
 
 	for i := 0; i < len(storageHeadersInfo)-1; i++ {
-		st.cleanupStorage(storageHeadersInfo[i].HeaderInfo.Nonce)
-		log.Info("cleanup storage :header with nonce", "nonce", storageHeadersInfo[i].HeaderInfo.Nonce)
-
-		lastNotarized := make(map[uint32]*sync.HdrInfo)
-		for _, lastNotarizedHeader := range storageHeadersInfo[i].LastNotarizedHeaders {
-			lastNotarized[lastNotarizedHeader.ShardId] = &sync.HdrInfo{
-				Nonce: lastNotarizedHeader.Nonce,
-				Hash:  lastNotarizedHeader.Hash,
-			}
-		}
-
-		log.Debug("cleanup notarized storage", "notarized headers", len(lastNotarized))
-		st.bootstrapper.cleanupNotarizedStorage(lastNotarized)
+		st.cleanupStorage(storageHeadersInfo[i].HeaderInfo)
+		st.bootstrapper.cleanupNotarizedStorage(storageHeadersInfo[i].HeaderInfo.Hash)
 	}
-	log.Debug(fmt.Sprintf("\n"))
 
 	err = st.bootStorer.SaveLastRound(round)
 	if err != nil {
@@ -163,13 +135,13 @@ func (st *storageBootstrapper) applyHeaderInfo(hdrInfo bootstrapStorage.Bootstra
 	return nil
 }
 
-func (st *storageBootstrapper) getBootInfos(storageHeaderInfo bootstrapStorage.BootstrapData) ([]bootstrapStorage.BootstrapData, error) {
-	highestFinalNonce := storageHeaderInfo.HighestFinalNonce
-	highestNonce := storageHeaderInfo.HeaderInfo.Nonce
+func (st *storageBootstrapper) getBootInfos(hdrInfo bootstrapStorage.BootstrapData) ([]bootstrapStorage.BootstrapData, error) {
+	highestFinalNonce := hdrInfo.HighestFinalNonce
+	highestNonce := hdrInfo.HeaderInfo.Nonce
 
-	lastRound := storageHeaderInfo.LastRound
+	lastRound := hdrInfo.LastRound
 	bootInfos := make([]bootstrapStorage.BootstrapData, 0)
-	bootInfos = append(bootInfos, storageHeaderInfo)
+	bootInfos = append(bootInfos, hdrInfo)
 
 	log.Debug("block info from storage",
 		"highest nonce", highestNonce, "lastFinalNone", highestFinalNonce, "last round", lastRound)
@@ -243,26 +215,37 @@ func (st *storageBootstrapper) applyBootInfos(bootInfos []bootstrapStorage.Boots
 	return nil
 }
 
-func (st *storageBootstrapper) cleanupStorage(nonce uint64) {
-	nonceToByteSlice := st.uint64Converter.ToByteSlice(nonce)
+func (st *storageBootstrapper) cleanupStorage(headerInfo bootstrapStorage.BootstrapHeaderInfo) {
+	log.Debug("cleanup storage")
+
+	nonceToByteSlice := st.uint64Converter.ToByteSlice(headerInfo.Nonce)
 	err := st.headerNonceHashStore.Remove(nonceToByteSlice)
 	if err != nil {
-		log.Debug("cannot cleanup header from storage",
-			"nonce", nonce,
+		log.Debug("block was not removed from storage",
+			"shradId", headerInfo.ShardId,
+			"nonce", headerInfo.Nonce,
+			"hash", headerInfo.Hash,
 			"error", err.Error())
+		return
 	}
+
+	log.Debug("block was removed from storage",
+		"shradId", headerInfo.ShardId,
+		"nonce", headerInfo.Nonce,
+		"hash", headerInfo.Hash)
 }
 
-func (st *storageBootstrapper) getShardHeaderFromStorage(headerHash []byte) (data.HeaderHandler, error) {
-	header, err := process.GetShardHeaderFromStorage(headerHash, st.marshalizer, st.store)
+func (st *storageBootstrapper) displayProcessedMiniBlocks(processedMiniBlocks map[string]map[string]struct{}) {
+	log.Debug("processed mini blocks applied")
 
-	return header, err
-}
-
-func (st *storageBootstrapper) getMetaHeaderFromStorage(hash []byte) (data.HeaderHandler, error) {
-	header, err := process.GetMetaHeaderFromStorage(hash, st.marshalizer, st.store)
-
-	return header, err
+	for metaBlockHash, miniBlocksHashes := range processedMiniBlocks {
+		log.Debug("processed",
+			"meta hash", []byte(metaBlockHash))
+		for miniBlockHash := range miniBlocksHashes {
+			log.Debug("processed",
+				"mini block hash", []byte(miniBlockHash))
+		}
+	}
 }
 
 func (st *storageBootstrapper) applyBlock(header data.HeaderHandler, headerHash []byte) error {

@@ -187,6 +187,7 @@ func initDataPool(testHash []byte) *mock.PoolsHolderStub {
 			return cs
 		},
 	}
+
 	return sdp
 }
 
@@ -373,7 +374,7 @@ func CreateMockArguments() blproc.ArgShardProcessor {
 			TxCoordinator:                &mock.TransactionCoordinatorMock{},
 			ValidatorStatisticsProcessor: &mock.ValidatorStatisticsProcessorMock{},
 			Rounder:                      &mock.RounderMock{},
-			BootstrapStorer: &mock.BoostrapStorerMock{
+			BootStorer: &mock.BoostrapStorerMock{
 				PutCalled: func(round int64, bootData bootstrapStorage.BootstrapData) error {
 					return nil
 				},

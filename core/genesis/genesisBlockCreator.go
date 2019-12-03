@@ -241,6 +241,7 @@ func createProcessorsForMetaGenesisBlock(
 		args.ShardCoordinator,
 		scForwarder,
 		&metachain.TransactionFeeHandler{},
+		&metachain.TransactionFeeHandler{},
 		gasHandler,
 	)
 	if err != nil {

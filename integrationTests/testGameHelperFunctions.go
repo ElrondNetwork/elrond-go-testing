@@ -7,10 +7,48 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ElrondNetwork/elrond-go-testing/crypto"
 	"github.com/ElrondNetwork/elrond-go-testing/data/state"
+	"github.com/ElrondNetwork/elrond-go-testing/process"
 	"github.com/ElrondNetwork/elrond-go-testing/process/factory"
 	"github.com/stretchr/testify/assert"
 )
+
+var gasPriceForGameSC = uint64(0)
+
+// ScCallTxWithParams creates and sends a SC tx call or deploy with all major parameters provided
+func ScCallTxWithParams(
+	senderNode *TestProcessorNode,
+	sk crypto.PrivateKey,
+	nonce uint64,
+	data string,
+	value *big.Int,
+	gasLimit uint64,
+	gasPrice uint64,
+) {
+
+	fmt.Println("Deploying SC...")
+	pkBuff, _ := sk.GeneratePublic().ToByteArray()
+	txArgs := &txArgs{
+		nonce:    nonce,
+		value:    value,
+		rcvAddr:  make([]byte, 32),
+		sndAddr:  pkBuff,
+		data:     data,
+		gasLimit: gasLimit,
+		gasPrice: gasPrice,
+	}
+
+	txDeploy := generateTx(
+		sk,
+		senderNode.OwnAccount.SingleSigner,
+		txArgs,
+	)
+
+	_, _ = senderNode.SendTransaction(txDeploy)
+	fmt.Println("Delaying for disseminating the deploy tx...")
+	time.Sleep(stepDelay)
+}
 
 // DeployScTx creates and sends a SC tx
 func DeployScTx(nodes []*TestProcessorNode, senderIdx int, scCode string) {
@@ -41,7 +79,7 @@ func PlayerJoinsGame(
 	nodes []*TestProcessorNode,
 	player *TestWalletAccount,
 	joinGameVal *big.Int,
-	round string,
+	round int32,
 	scAddress []byte,
 ) {
 	txDispatcherNode := getNodeWithinSameShardAsPlayer(nodes, player.Address.Bytes())
@@ -54,9 +92,9 @@ func PlayerJoinsGame(
 			value:    joinGameVal,
 			rcvAddr:  scAddress,
 			sndAddr:  player.Address.Bytes(),
-			data:     fmt.Sprintf("joinGame@%s", round),
+			data:     fmt.Sprintf("joinGame@00%s", hex.EncodeToString(big.NewInt(0).SetInt64(int64(round)).Bytes())),
 			gasLimit: 5000,
-			gasPrice: MinTxGasPrice,
+			gasPrice: gasPriceForGameSC,
 		})
 	player.Nonce++
 	newBalance := big.NewInt(0)
@@ -73,7 +111,7 @@ func NodeCallsRewardAndSend(
 	idxNodeOwner int,
 	winnerPlayer *TestWalletAccount,
 	prize *big.Int,
-	round string,
+	round int32,
 	scAddress []byte,
 ) {
 	fmt.Println("Calling SC.rewardAndSendToWallet...")
@@ -86,9 +124,9 @@ func NodeCallsRewardAndSend(
 			value:    big.NewInt(0),
 			rcvAddr:  scAddress,
 			sndAddr:  nodes[idxNodeOwner].OwnAccount.PkTxSignBytes,
-			data:     fmt.Sprintf("rewardAndSendToWallet@%s@%s@%X", round, hex.EncodeToString(winnerAddress), prize),
+			data:     fmt.Sprintf("rewardAndSendToWallet@%X@%s@%s", hex.EncodeToString(big.NewInt(0).SetInt64(int64(round)).Bytes()), hex.EncodeToString(winnerAddress), hex.EncodeToString(prize.Bytes())),
 			gasLimit: 30000,
-			gasPrice: MinTxGasPrice,
+			gasPrice: gasPriceForGameSC,
 		})
 	nodes[idxNodeOwner].OwnAccount.Nonce++
 
@@ -122,9 +160,9 @@ func NodeDoesWithdraw(
 			value:    big.NewInt(0),
 			rcvAddr:  scAddress,
 			sndAddr:  nodes[idxNode].OwnAccount.PkTxSignBytes,
-			data:     fmt.Sprintf("withdraw@%X", withdrawValue),
+			data:     fmt.Sprintf("withdraw@00%s", hex.EncodeToString(withdrawValue.Bytes())),
 			gasLimit: 5000,
-			gasPrice: MinTxGasPrice,
+			gasPrice: gasPriceForGameSC,
 		})
 	nodes[idxNode].OwnAccount.Nonce++
 	_, _ = nodes[idxNode].SendTransaction(txScCall)
@@ -150,9 +188,9 @@ func NodeDoesTopUp(
 			value:    topUpValue,
 			rcvAddr:  scAddress,
 			sndAddr:  nodes[idxNode].OwnAccount.PkTxSignBytes,
-			data:     fmt.Sprintf("topUp"),
+			data:     "topUp",
 			gasLimit: 5000,
-			gasPrice: MinTxGasPrice,
+			gasPrice: gasPriceForGameSC,
 		})
 	nodes[idxNode].OwnAccount.Nonce++
 	_, _ = nodes[idxNode].SendTransaction(txScCall)
@@ -333,12 +371,16 @@ func CheckScBalanceOf(
 	scAddressBytes []byte,
 ) {
 	fmt.Println("Checking SC.balanceOf...")
-	bytesValue, _ := nodeWithSc.ScDataGetter.Get(
-		scAddressBytes,
-		"balanceOf",
-		nodeWithCaller.OwnAccount.PkTxSignBytes,
-	)
-	retrievedValue := big.NewInt(0).SetBytes(bytesValue)
+
+	query := process.SCQuery{
+		ScAddress: scAddressBytes,
+		FuncName:  "balanceOf",
+		Arguments: [][]byte{nodeWithCaller.OwnAccount.PkTxSignBytes},
+	}
+
+	vmOutput, _ := nodeWithSc.SCQueryService.ExecuteQuery(&query)
+
+	retrievedValue := vmOutput.ReturnData[0]
 	fmt.Printf("SC balanceOf returned %d\n", retrievedValue)
-	assert.Equal(t, expectedSC, retrievedValue)
+	assert.Equal(t, expectedSC, big.NewInt(0).SetBytes(retrievedValue))
 }

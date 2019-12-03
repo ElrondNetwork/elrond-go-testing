@@ -2,7 +2,6 @@ package block
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"sync"
@@ -70,7 +69,7 @@ func NewShardProcessor(arguments ArgShardProcessor) (*shardProcessor, error) {
 		blockChainHook:                arguments.BlockChainHook,
 		txCoordinator:                 arguments.TxCoordinator,
 		rounder:                       arguments.Rounder,
-		bootStorer:                    arguments.BootstrapStorer,
+		bootStorer:                    arguments.BootStorer,
 		validatorStatisticsProcessor:  arguments.ValidatorStatisticsProcessor,
 	}
 	err = base.setLastNotarizedHeadersSlice(arguments.StartHeaders)
@@ -225,7 +224,6 @@ func (sp *shardProcessor) ProcessBlock(
 	}
 
 	if sp.accounts.JournalLen() != 0 {
-		log.Info(fmt.Sprintf("Length of accouts journal: %d", sp.accounts.JournalLen()))
 		return process.ErrAccountStateDirty
 	}
 
@@ -746,8 +744,8 @@ func (sp *shardProcessor) CommitBlock(
 	)
 
 	headerInfo := bootstrapStorage.BootstrapHeaderInfo{
-		ShardId: header.ShardId,
-		Nonce:   header.Nonce,
+		ShardId: header.GetShardID(),
+		Nonce:   header.GetNonce(),
 		Hash:    headerHash,
 	}
 
@@ -756,26 +754,23 @@ func (sp *shardProcessor) CommitBlock(
 		"validator root hash", core.ToB64(header.ValidatorStatsRootHash))
 
 	sp.mutProcessedMiniBlocks.RLock()
+	//TODO remove this
 	log.Debug("processed mini blocks on commit block")
-	for key, value := range sp.processedMiniBlocks {
+	for metaBlockHash, miniBlocksHashes := range sp.processedMiniBlocks {
 		log.Debug("processed",
-			"meta block hash", []byte(key))
+			"meta block hash", []byte(metaBlockHash))
 
-		for miniBlockHash := range value {
+		for miniBlockHash := range miniBlocksHashes {
 			log.Debug("processed",
 				"mini block hash", []byte(miniBlockHash))
 
 		}
 	}
 
-	processedMiniBlockBytes, errNotCritical := json.Marshal(sp.processedMiniBlocks)
+	processedMiniBlocks := process.ConvertProcessedMiniBlocksMapToSlice(sp.processedMiniBlocks)
 	sp.mutProcessedMiniBlocks.RUnlock()
 
-	if errNotCritical != nil {
-		log.Debug("commit block",
-			"cannot marshal processed mini block map", errNotCritical.Error())
-	}
-	sp.prepareDataForBootStorer(headerInfo, header.Round, finalHeaders, finalHeadersHashes, processedMiniBlockBytes)
+	sp.prepareDataForBootStorer(headerInfo, header.Round, finalHeaders, finalHeadersHashes, processedMiniBlocks)
 
 	go sp.cleanTxsPools()
 
@@ -806,10 +801,10 @@ func (sp *shardProcessor) CommitBlock(
 }
 
 // ApplyProcessedMiniBlocks will apply processed mini blocks
-func (sp *shardProcessor) ApplyProcessedMiniBlocks(miniBlocks map[string]map[string]struct{}) {
+func (sp *shardProcessor) ApplyProcessedMiniBlocks(processedMiniBlocks map[string]map[string]struct{}) {
 	sp.mutProcessedMiniBlocks.Lock()
-	for key, value := range miniBlocks {
-		sp.processedMiniBlocks[key] = value
+	for metaHash, miniBlocksHashes := range processedMiniBlocks {
+		sp.processedMiniBlocks[metaHash] = miniBlocksHashes
 	}
 	sp.mutProcessedMiniBlocks.Unlock()
 }
@@ -1736,10 +1731,14 @@ func (sp *shardProcessor) addProcessedMiniBlock(metaBlockHash []byte, miniBlockH
 
 func (sp *shardProcessor) removeProcessedMiniBlock(miniBlockHash []byte) {
 	sp.mutProcessedMiniBlocks.Lock()
-	for _, miniBlocksProcessed := range sp.processedMiniBlocks {
+	for metaHash, miniBlocksProcessed := range sp.processedMiniBlocks {
 		_, isProcessed := miniBlocksProcessed[string(miniBlockHash)]
 		if isProcessed {
 			delete(miniBlocksProcessed, string(miniBlockHash))
+		}
+
+		if len(miniBlocksProcessed) == 0 {
+			delete(sp.processedMiniBlocks, metaHash)
 		}
 	}
 	sp.mutProcessedMiniBlocks.Unlock()

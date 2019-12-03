@@ -18,21 +18,27 @@ var ErrNilMarshalizer = errors.New("nil Marshalizer")
 // ErrNilBootStorer signals that an operation has been attempted to or with a nil storer implementation
 var ErrNilBootStorer = errors.New("nil boot storer")
 
-//BootstrapHeaderInfo is struct used to store information about a header
+//MiniBlocksInMeta is used to store all mini blocks hashes for a metablock hash
+type MiniBlocksInMeta struct {
+	MetaHash         []byte
+	MiniBlocksHashes [][]byte
+}
+
+//BootstrapHeaderInfo is used to store information about a header
 type BootstrapHeaderInfo struct {
 	ShardId uint32
 	Nonce   uint64
 	Hash    []byte
 }
 
-// BootstrapData is struct used to store information that are needed for bootstrap
+// BootstrapData is used to store information that are needed for bootstrap
 type BootstrapData struct {
-	HeaderInfo               BootstrapHeaderInfo
-	LastNotarizedHeaders     []BootstrapHeaderInfo
-	LastFinals               []BootstrapHeaderInfo
-	ProcessedMiniBlocksBytes []byte
-	HighestFinalNonce        uint64
-	LastRound                int64
+	HeaderInfo           BootstrapHeaderInfo
+	LastNotarizedHeaders []BootstrapHeaderInfo
+	LastFinals           []BootstrapHeaderInfo
+	ProcessedMiniBlocks  []MiniBlocksInMeta
+	HighestFinalNonce    uint64
+	LastRound            int64
 }
 
 type bootstrapStorer struct {

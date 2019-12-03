@@ -129,7 +129,6 @@ type TransactionCoordinator interface {
 
 // SmartContractProcessor is the main interface for the smart contract caller engine
 type SmartContractProcessor interface {
-	ComputeTransactionType(tx *transaction.Transaction) (TransactionType, error)
 	ExecuteSmartContractTransaction(tx *transaction.Transaction, acntSrc, acntDst state.AccountHandler, round uint64) error
 	DeploySmartContract(tx *transaction.Transaction, acntSrc state.AccountHandler, round uint64) error
 	IsInterfaceNil() bool
@@ -378,7 +377,7 @@ type RequestHandler interface {
 
 // ArgumentsParser defines the functionality to parse transaction data into arguments and code for smart contracts
 type ArgumentsParser interface {
-	GetArguments() ([]*big.Int, error)
+	GetArguments() ([][]byte, error)
 	GetCode() ([]byte, error)
 	GetFunction() (string, error)
 	ParseData(data string) error
@@ -488,19 +487,11 @@ type NetworkConnectionWatcher interface {
 	IsInterfaceNil() bool
 }
 
-// BootStorer is the interface needed by bootstrapper to read/write data in storage
-type BootStorer interface {
-	SaveLastRound(round int64) error
-	Put(round int64, bootData bootstrapStorage.BootstrapData) error
-	Get(round int64) (bootstrapStorage.BootstrapData, error)
-	GetHighestRound() int64
-	IsInterfaceNil() bool
-}
-
-// BootstrapperFromStorage is the interface needed by boot component to load data from storage
-type BootstrapperFromStorage interface {
-	LoadFromStorage() error
-	IsInterfaceNil() bool
+// SCQuery represents a prepared query for executing a function of the smart contract
+type SCQuery struct {
+	ScAddress []byte
+	FuncName  string
+	Arguments [][]byte
 }
 
 // GasHandler is able to perform some gas calculation
@@ -516,5 +507,20 @@ type GasHandler interface {
 	RemoveGasRefunded(hashes [][]byte)
 	ComputeGasConsumedByMiniBlock(*block.MiniBlock, map[string]data.TransactionHandler) (uint64, uint64, error)
 	ComputeGasConsumedByTx(txSenderShardId uint32, txReceiverShardId uint32, txHandler data.TransactionHandler) (uint64, uint64, error)
+	IsInterfaceNil() bool
+}
+
+// BootStorer is the interface needed by bootstrapper to read/write data in storage
+type BootStorer interface {
+	SaveLastRound(round int64) error
+	Put(round int64, bootData bootstrapStorage.BootstrapData) error
+	Get(round int64) (bootstrapStorage.BootstrapData, error)
+	GetHighestRound() int64
+	IsInterfaceNil() bool
+}
+
+// BootstrapperFromStorage is the interface needed by boot component to load data from storage
+type BootstrapperFromStorage interface {
+	LoadFromStorage() error
 	IsInterfaceNil() bool
 }

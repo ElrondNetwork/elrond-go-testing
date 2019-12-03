@@ -663,7 +663,7 @@ func checkProcessorNilParameters(arguments ArgBaseProcessor) error {
 	if check.IfNil(arguments.Rounder) {
 		return process.ErrNilRounder
 	}
-	if check.IfNil(arguments.BootstrapStorer) {
+	if check.IfNil(arguments.BootStorer) {
 		return process.ErrNilStorage
 	}
 	if arguments.BlockChainHook == nil || arguments.BlockChainHook.IsInterfaceNil() {
@@ -1055,12 +1055,44 @@ func (bp *baseProcessor) prepareDataForBootStorer(
 	round uint64,
 	lastFinalHdrs []data.HeaderHandler,
 	lastFinalHashes [][]byte,
-	processedMiniBlockBytes []byte,
+	processedMiniBlocks []bootstrapStorage.MiniBlocksInMeta,
 ) {
-	lastNotarizedHdrs := make([]bootstrapStorage.BootstrapHeaderInfo, 0)
 	lastFinals := make([]bootstrapStorage.BootstrapHeaderInfo, 0)
 
 	//TODO add end of epoch stuff
+
+	lastNotarizedHdrs := bp.getLastNotarizedHdrs()
+	highestFinalNonce := bp.forkDetector.GetHighestFinalBlockNonce()
+
+	for i := range lastFinalHdrs {
+		headerInfo := bootstrapStorage.BootstrapHeaderInfo{
+			ShardId: lastFinalHdrs[i].GetShardID(),
+			Nonce:   lastFinalHdrs[i].GetNonce(),
+			Hash:    lastFinalHashes[i],
+		}
+
+		lastFinals = append(lastFinals, headerInfo)
+	}
+
+	bootData := bootstrapStorage.BootstrapData{
+		HeaderInfo:           headerInfo,
+		LastNotarizedHeaders: lastNotarizedHdrs,
+		LastFinals:           lastFinals,
+		HighestFinalNonce:    highestFinalNonce,
+		ProcessedMiniBlocks:  processedMiniBlocks,
+	}
+
+	go func() {
+		err := bp.bootStorer.Put(int64(round), bootData)
+		if err != nil {
+			log.Warn("cannot save boot data in storage",
+				"error", err.Error())
+		}
+	}()
+}
+
+func (bp *baseProcessor) getLastNotarizedHdrs() []bootstrapStorage.BootstrapHeaderInfo {
+	lastNotarizedHdrs := make([]bootstrapStorage.BootstrapHeaderInfo, 0)
 
 	bp.mutNotarizedHdrs.RLock()
 	for shardId := range bp.notarizedHdrs {
@@ -1085,32 +1117,7 @@ func (bp *baseProcessor) prepareDataForBootStorer(
 	}
 	bp.mutNotarizedHdrs.RUnlock()
 
-	highestFinalNonce := bp.forkDetector.GetHighestFinalBlockNonce()
-
-	for i := range lastFinalHdrs {
-		headerInfo := bootstrapStorage.BootstrapHeaderInfo{
-			ShardId: lastFinalHdrs[i].GetShardID(),
-			Nonce:   lastFinalHdrs[i].GetNonce(),
-			Hash:    lastFinalHashes[i],
-		}
-
-		lastFinals = append(lastFinals, headerInfo)
-	}
-
-	bootData := bootstrapStorage.BootstrapData{
-		HeaderInfo:               headerInfo,
-		LastNotarizedHeaders:     lastNotarizedHdrs,
-		LastFinals:               lastFinals,
-		HighestFinalNonce:        highestFinalNonce,
-		ProcessedMiniBlocksBytes: processedMiniBlockBytes,
-	}
-
-	go func() {
-		err := bp.bootStorer.Put(int64(round), bootData)
-		if err != nil {
-			log.Debug("cannot save boot data in storage", "error", err.Error())
-		}
-	}()
+	return lastNotarizedHdrs
 }
 
 func (bp *baseProcessor) commitAll() error {

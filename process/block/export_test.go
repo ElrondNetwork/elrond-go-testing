@@ -8,7 +8,6 @@ import (
 	"github.com/ElrondNetwork/elrond-go-testing/data"
 	"github.com/ElrondNetwork/elrond-go-testing/data/block"
 	"github.com/ElrondNetwork/elrond-go-testing/dataRetriever"
-	"github.com/ElrondNetwork/elrond-go-testing/display"
 	"github.com/ElrondNetwork/elrond-go-testing/hashing"
 	"github.com/ElrondNetwork/elrond-go-testing/marshal"
 	"github.com/ElrondNetwork/elrond-go-testing/process"
@@ -31,10 +30,6 @@ func (bp *baseProcessor) CheckBlockValidity(
 	bodyHandler data.BodyHandler,
 ) error {
 	return bp.checkBlockValidity(chainHandler, headerHandler, bodyHandler)
-}
-
-func DisplayHeader(headerHandler data.HeaderHandler) []*display.LineData {
-	return displayHeader(headerHandler)
 }
 
 func (sp *shardProcessor) ReceivedMetaBlock(metaBlockHash []byte) {
@@ -79,7 +74,7 @@ func NewShardProcessorEmptyWith3shards(tdp dataRetriever.PoolsHolder, genesisBlo
 			TxCoordinator:                &mock.TransactionCoordinatorMock{},
 			ValidatorStatisticsProcessor: &mock.ValidatorStatisticsProcessorMock{},
 			Rounder:                      &mock.RounderMock{},
-			BootstrapStorer: &mock.BoostrapStorerMock{
+			BootStorer: &mock.BoostrapStorerMock{
 				PutCalled: func(round int64, bootData bootstrapStorage.BootstrapData) error {
 					return nil
 				},
